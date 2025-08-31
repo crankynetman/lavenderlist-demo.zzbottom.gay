@@ -1,0 +1,113 @@
+DefaultContentLanguage = "en" # Change this to change the site's language
+baseURL = "http://lavenderlist-demo.zzbottom.gay" 
+languageCode = "en-us" 
+preserveTaxonomyNames = true 
+theme = "hugo.386" 
+title = "The Lavender List" 
+
+[params]
+# The name to display as main title in the home page
+mainpagetitle = "The Lavender List"
+
+# The subtitle to display under the title in the home page
+mainpagesubtitle = "Definitely Not Craigslist®"
+
+# The description of your website. It will be displayed in the home page
+mainpagedesc = "Welcome to The Lavender List!"
+
+# The name to display in the copyright section in the footer
+copyrightname = "The Lavender"
+
+# The url to use as link in the copyright name in the footer. Leave empty to use none.
+copyrighturl = ""
+
+# Show the "built on Hugo" disclaimer
+showhugo = true
+
+# Urls for social networks
+#facebook = "https://facebook.com"
+#linkedin = "https://linkedin.com"
+
+# Enables or disables the loading animations. false activates them. Default is false.
+loadfastload = false
+
+# Sets the speed for the page loading effect. Default is 1.0.
+loadspeedfactor = 1.0
+
+# Enables or disables the second flyby cursor. Default is false.
+loadonepass = true
+
+[params.copyright]
+name = "The Lavender"
+
+# The url to use as link in the copyright name in the footer. Leave empty to use none.
+url = ""
+
+# Text to go before copyright information
+prefix = "[The Lavender List](https://www.thelavendernewsletter.com/)"
+
+# Text to go between copyright and hugo disclaimer (if enabled)
+suffix = ""
+
+[menu]
+# This displays buttons in the navbar to access your contents
+[[menu.main]]
+identifier = "about" # An unique identifier for the button
+name = "About" # A display name for the button
+url = "/about/" # The path to the content. It can lead to a single page (like here)
+weight = 10 # A number to order the buttons in the navbar
+
+[[menu.main]]
+identifier = "disclaimer" 
+name = "Disclaimer" 
+url = "/disclaimer/" # The path can lead to a content folder too.
+weight = 20 
+
+[[menu.main]]
+identifier = "wyt" 
+name = "Worth Your Time" 
+url = "/wyt/" # The path can lead to a content folder too.
+weight = 30 
+
+[[menu.main]]
+identifier = "posts" 
+name = "All Posts" 
+url = "/post/" # The path can lead to a content folder too.
+weight = 50 
+
+[taxonomies]
+category = "categories"
+tag = "tags"
+
+[privacy]
+
+[privacy.Apple]
+disabled = false
+simple = true
+
+[privacy.twitter]
+disabled = false
+enableDNT = true
+simple = true
+
+[privacy.Google]
+disabled = false
+simple = true
+
+[privacy.Anchor]
+disabled = false
+privacyEnhanced = true
+
+[services]
+
+[services.Apple]
+disableInlineCSS = true
+
+[services.Google]
+disableInlineCSS = true
+
+[services.Anchor]
+disableInlineCSS = true
+
+[services.twitter]
+disableInlineCSS = true
