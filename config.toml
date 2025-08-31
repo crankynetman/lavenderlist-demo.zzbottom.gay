@@ -64,12 +64,6 @@ url = "/disclaimer/" # The path can lead to a content folder too.
 weight = 20 
 
 [[menu.main]]
-identifier = "wyt" 
-name = "Worth Your Time" 
-url = "/wyt/" # The path can lead to a content folder too.
-weight = 30 
-
-[[menu.main]]
 identifier = "posts" 
 name = "All Posts" 
 url = "/post/" # The path can lead to a content folder too.

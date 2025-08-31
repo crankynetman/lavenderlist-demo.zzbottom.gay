@@ -1,0 +1,51 @@
+/* ==========================================================================
+   CUSTOM CSS FOR HUGO.386 THEME
+   ========================================================================== */
+
+/* 1. CSS VARIABLES - Define your color palette */
+:root {
+  --primary-color: #62558A;     /* Lavender */
+  --secondary-color: #307089;   /* Teal */
+  --text-color: #ffffff;        /* White text */
+  --link-color: #404040;        /* White links */
+  --accent-color: #8B7BAE;      /* Light lavender accent */
+}
+
+/* 2. LOADING ANIMATION OVERRIDE (fixes blue flash) */
+#wrap386, #bar386 {
+  background: var(--primary-color) !important;
+}
+
+/* 3. BASE LAYOUT & TYPOGRAPHY */
+body {
+  background-color: var(--primary-color) !important;
+  color: var(--text-color) !important;
+}
+
+/* 4. NAVIGATION */
+.navbar,
+.navbar-inner {
+  background-color: var(--primary-color) !important;
+  background: var(--primary-color) !important;
+}
+
+/* 5. HEADERS */
+.page-header {
+  background-color: var(--secondary-color) !important;
+}
+
+/* 6. LINKS */
+a {
+  color: var(--link-color) !important;
+}
+
+a:hover {
+  color: var(--accent-color) !important;
+}
+
+/* 7. FOOTER */
+footer {
+  background-color: var(--primary-color) !important;
+  background: var(--primary-color) !important;
+}
+
