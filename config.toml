@@ -1,22 +1,22 @@
 DefaultContentLanguage = "en" # Change this to change the site's language
-baseURL = "http://lavenderlist-demo.zzbottom.gay" 
+baseURL = "http://gayslist-demo.zzbottom.gay" 
 languageCode = "en-us" 
 preserveTaxonomyNames = true 
 theme = "hugo.386" 
-title = "The Lavender List" 
+title = "The GaysList" 
 
 [params]
 # The name to display as main title in the home page
-mainpagetitle = "The Lavender List"
+mainpagetitle = "The GaysList"
 
 # The subtitle to display under the title in the home page
 mainpagesubtitle = "Definitely Not Craigslist®"
 
 # The description of your website. It will be displayed in the home page
-mainpagedesc = "Welcome to The Lavender List!"
+mainpagedesc = "Welcome to The GaysList!"
 
 # The name to display in the copyright section in the footer
-copyrightname = "The Lavender"
+copyrightname = "The GaysList"
 
 # The url to use as link in the copyright name in the footer. Leave empty to use none.
 copyrighturl = ""
@@ -44,7 +44,7 @@ name = "The Lavender"
 url = ""
 
 # Text to go before copyright information
-prefix = "[The Lavender List](https://www.thelavendernewsletter.com/)"
+prefix = "[The GaysList](https://www.thelavendernewsletter.com/)"
 
 # Text to go between copyright and hugo disclaimer (if enabled)
 suffix = ""
