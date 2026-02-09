@@ -27,6 +27,7 @@ AUTO_GENERATED_FILE_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-"
 )
 
+
 class Settings(BaseSettings):
     google_credentials_json: str = Field(default="", alias="GOOGLE_CREDENTIALS_JSON")
     google_sheet_id: str = Field(default="", alias="GOOGLE_SHEET_ID")
@@ -42,9 +43,9 @@ class Settings(BaseSettings):
 settings = Settings()
 
 
-def row_to_string(row: dict[Any, Any], key: str, default: str = "") -> str:
-    """Safely extract a sheet value as a stripped string."""
-    return str(row.get(key, default)).strip()
+def clean_row(row: dict[Any, Any]) -> dict[str, str]:
+    """Convert all values in a sheet row to stripped strings."""
+    return {str(k).strip(): str(v).strip() for k, v in row.items()}
 
 
 def authenticate_sheets() -> gspread.Client:
@@ -76,28 +77,28 @@ def parse_submission_timestamp(raw: str) -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def get_filename_for_row(row: dict[Any, Any]) -> str:
+def get_filename_for_row(row: dict[str, str]) -> str:
     """Derive the deterministic filename for a row without generating full content."""
-    title = row_to_string(row, "Listing Title", "Untitled Post")
-    timestamp = row_to_string(row, "Timestamp")
+    title = row.get("Listing Title") or "Untitled Post"
+    timestamp = row.get("Timestamp", "")
     post_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{timestamp}:{title}"))
     title_slug = sanitize_text(title)
     return f"{post_uuid}-{title_slug}" if title_slug else post_uuid
 
 
-def generate_hugo_post(row: dict[Any, Any]) -> tuple[str, str]:
+def generate_hugo_post(row: dict[str, str]) -> tuple[str, str]:
     """Generate a Hugo post from a sheet row. Returns (filename, content)."""
-    title = row_to_string(row, "Listing Title", "Untitled Post")
-    description = row_to_string(row, "Listing Description")
-    category = row_to_string(row, "Category:", "for-sale").lower().replace(" ", "-")
-    tags_str = row_to_string(row, "Tags (comma separated list)")
-    price = row_to_string(row, "Price:")
-    location = row_to_string(row, "Location")
-    condition = row_to_string(row, "Condition", "N/A")
-    contact_method = row_to_string(row, "Contact Method", "email")
-    contact_info = row_to_string(row, "Contact Info")
-    email = row_to_string(row, "Email Address")
-    timestamp = row_to_string(row, "Timestamp")
+    title = row.get("Listing Title") or "Untitled Post"
+    description = row.get("Listing Description", "")
+    category = (row.get("Category:") or "for-sale").lower().replace(" ", "-")
+    tags_str = row.get("Tags (comma separated list)", "")
+    price = row.get("Price:", "")
+    location = row.get("Location", "")
+    condition = row.get("Condition") or "N/A"
+    contact_method = row.get("Contact Method") or "email"
+    contact_info = row.get("Contact Info", "")
+    email = row.get("Email Address", "")
+    timestamp = row.get("Timestamp", "")
 
     post_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{timestamp}:{title}"))
 
@@ -211,7 +212,7 @@ def clear_rerender_flag(worksheet: gspread.Worksheet, row_index: int, headers: l
 
 
 def handle_approved_row(
-    row: dict[Any, Any],
+    row: dict[str, str],
     row_index: int,
     worksheet: gspread.Worksheet,
     headers: list[str],
@@ -223,7 +224,7 @@ def handle_approved_row(
 
     if dry_run:
         print(f"[DRY RUN] Would write: {filename}.md")
-        print(f"   Title: {row_to_string(row, 'Listing Title')}\n")
+        print(f"   Title: {row.get('Listing Title', '')}\n")
         return filename
 
     filepath = save_hugo_post(filename, content, hugo_content_dir)
@@ -238,7 +239,7 @@ def handle_approved_row(
 
 
 def handle_rejected_row(
-    row: dict[Any, Any],
+    row: dict[str, str],
     row_index: int,
     worksheet: gspread.Worksheet,
     headers: list[str],
@@ -313,8 +314,9 @@ def process_posts(
     created_posts: list[str] = []
     deleted_posts: list[str] = []
 
-    for row_index, row in enumerate(records, start=2):
-        status = row_to_string(row, "moderation_status").lower()
+    for row_index, raw_row in enumerate(records, start=2):
+        row = clean_row(raw_row)
+        status = row.get("moderation_status", "").lower()
 
         try:
             match status:
@@ -331,22 +333,21 @@ def process_posts(
                     if result:
                         deleted_posts.append(result)
 
-                case "pending":
+                case "pending" | "":
                     pass
 
                 case _:
-                    print(
-                        f"Warning: Unknown moderation_status '{status}' for row {row_index}, skipping"
-                    )
+                    print(f"Warning: moderation_status '{status}' for row {row_index} is invalid.")
 
         except Exception as e:
-            timestamp = row_to_string(row, "Timestamp") or "unknown"
+            timestamp = row.get("Timestamp") or "unknown"
             print(f"Error processing row {timestamp}: {e}")
 
     # Build set of filenames that should exist (approved rows)
     expected_filenames: set[str] = set()
-    for _, row in enumerate(records, start=2):
-        if row_to_string(row, "moderation_status").lower() == "approved":
+    for _, raw_row in enumerate(records, start=2):
+        row = clean_row(raw_row)
+        if row.get("moderation_status", "").lower() == "approved":
             expected_filenames.add(get_filename_for_row(row))
 
     orphaned_posts = cleanup_orphaned_posts(expected_filenames, hugo_content_dir, dry_run)
@@ -379,9 +380,7 @@ def main() -> int:
     )
 
     if args.dry_run:
-        print(
-            f"\n[DRY RUN] Would have written {len(created_posts)} posts, deleted {len(deleted_posts)} posts"
-        )
+        print(f"\n[DRY RUN] Wrote {len(created_posts)} posts, deleted {len(deleted_posts)} posts")
     else:
         if created_posts:
             print(f"\nSuccessfully wrote {len(created_posts)} posts:")
