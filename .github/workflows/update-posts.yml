@@ -27,13 +27,15 @@ jobs:
         env:
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          CONTENT_DIR: ../content/post # Hugo content directory relative to the script
         working-directory: ./update-posts
         run: uv run python sheets_to_hugo.py
 
       - name: Check for changes
         id: git-check
         run: |
-          if git diff --quiet; then
+          git add content/post/
+          if git diff --cached --quiet; then
             echo "has-changes=false" >> $GITHUB_OUTPUT
           else
             echo "has-changes=true" >> $GITHUB_OUTPUT
@@ -42,8 +44,6 @@ jobs:
       - name: Create PR with new posts
         if: steps.git-check.outputs.has-changes == 'true'
         run: |
-          git config --global credential.helper store
-          echo "https://oauth2:${{ secrets.GITHUB_TOKEN }}@github.com" > ~/.git-credentials
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
@@ -51,7 +51,6 @@ jobs:
           BRANCH="posts/update-$TIMESTAMP"
 
           git checkout -b $BRANCH
-          git add content/post/
           git commit -m "Add new posts from Google Sheet ($TIMESTAMP)"
           git push origin $BRANCH
 
