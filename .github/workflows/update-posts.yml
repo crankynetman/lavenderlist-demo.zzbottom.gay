@@ -21,7 +21,7 @@ jobs:
           python-version: '3.13'
 
       - name: Install UV
-        uses: astral-sh/setup-uv@v2
+        uses: astral-sh/setup-uv@v7
 
       - name: Run sheets_to_hugo
         env:
