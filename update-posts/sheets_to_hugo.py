@@ -168,54 +168,9 @@ def delete_hugo_post(filename: str, hugo_content_dir: str) -> bool:
     return False
 
 
-def mark_published_in_sheet(
-    worksheet: gspread.Worksheet, row_index: int, headers: list[str]
-) -> bool:
-    """Mark a single row as published. Expects the 1-based row index."""
-    if "published" not in headers:
-        return False
-    try:
-        col_idx = headers.index("published") + 1
-        worksheet.update_cell(row_index, col_idx, "TRUE")
-        return True
-    except Exception as e:
-        print(f"Warning: Could not mark row {row_index} as published: {e}")
-        return False
-
-
-def mark_unpublished_in_sheet(
-    worksheet: gspread.Worksheet, row_index: int, headers: list[str]
-) -> bool:
-    """Mark a single row as unpublished. Expects the 1-based row index."""
-    if "published" not in headers:
-        return False
-    try:
-        col_idx = headers.index("published") + 1
-        worksheet.update_cell(row_index, col_idx, "FALSE")
-        return True
-    except Exception as e:
-        print(f"Warning: Could not mark row {row_index} as unpublished: {e}")
-        return False
-
-
-def clear_rerender_flag(worksheet: gspread.Worksheet, row_index: int, headers: list[str]) -> bool:
-    """Reset re_render_post to FALSE after processing."""
-    if "re_render_post" not in headers:
-        return False
-    try:
-        col_idx = headers.index("re_render_post") + 1
-        worksheet.update_cell(row_index, col_idx, "FALSE")
-        return True
-    except Exception as e:
-        print(f"Warning: Could not clear re_render_post for row {row_index}: {e}")
-        return False
-
-
 def handle_approved_row(
     row: dict[str, str],
     row_index: int,
-    worksheet: gspread.Worksheet,
-    headers: list[str],
     hugo_content_dir: str,
     dry_run: bool = False,
 ) -> str:
@@ -223,26 +178,17 @@ def handle_approved_row(
     filename, content = generate_hugo_post(row)
 
     if dry_run:
-        print(f"[DRY RUN] Would write: {filename}.md")
-        print(f"   Title: {row.get('Listing Title', '')}\n")
+        print(f"[Row {row_index}] [DRY RUN] Would write: {filename}.md")
         return filename
 
     filepath = save_hugo_post(filename, content, hugo_content_dir)
-    print(f"Wrote post: {filepath}")
-
-    if mark_published_in_sheet(worksheet, row_index, headers):
-        print("   Marked as published in sheet")
-    if clear_rerender_flag(worksheet, row_index, headers):
-        print("   Cleared re_render_post flag")
-
+    print(f"[Row {row_index}] Wrote post: {filename}.md")
     return filepath
 
 
 def handle_pending_row(
     row: dict[str, str],
     row_index: int,
-    worksheet: gspread.Worksheet,
-    headers: list[str],
     hugo_content_dir: str,
     dry_run: bool = False,
 ) -> str | None:
@@ -250,26 +196,18 @@ def handle_pending_row(
     filename = get_filename_for_row(row)
 
     if dry_run:
-        print(f"[DRY RUN] Would delete (pending): {filename}.md")
+        print(f"[Row {row_index}] [DRY RUN] Would delete (pending): {filename}.md")
         return filename
 
     deleted = delete_hugo_post(filename, hugo_content_dir)
     if deleted:
-        print(f"Deleted post (pending): {filename}.md")
-
-    if mark_unpublished_in_sheet(worksheet, row_index, headers):
-        print("   Marked as unpublished in sheet")
-    if clear_rerender_flag(worksheet, row_index, headers):
-        print("   Cleared re_render_post flag")
-
+        print(f"[Row {row_index}] Deleted post (pending): {filename}.md")
     return filename if deleted else None
 
 
 def handle_rejected_row(
     row: dict[str, str],
     row_index: int,
-    worksheet: gspread.Worksheet,
-    headers: list[str],
     hugo_content_dir: str,
     dry_run: bool = False,
 ) -> str | None:
@@ -277,18 +215,12 @@ def handle_rejected_row(
     filename = get_filename_for_row(row)
 
     if dry_run:
-        print(f"[DRY RUN] Would delete: {filename}.md")
+        print(f"[Row {row_index}] [DRY RUN] Would delete (rejected): {filename}.md")
         return filename
 
     deleted = delete_hugo_post(filename, hugo_content_dir)
     if deleted:
-        print(f"Deleted post: {filename}.md")
-
-    if mark_unpublished_in_sheet(worksheet, row_index, headers):
-        print("   Marked as unpublished in sheet")
-    if clear_rerender_flag(worksheet, row_index, headers):
-        print("   Cleared re_render_post flag")
-
+        print(f"[Row {row_index}] Deleted post (rejected): {filename}.md")
     return filename if deleted else None
 
 
@@ -338,8 +270,12 @@ def process_posts(
         print(f"Error fetching from Google Sheet: {e}")
         return [], []
 
+    published_col = headers.index("published") + 1 if "published" in headers else None
+    rerender_col = headers.index("re_render_post") + 1 if "re_render_post" in headers else None
+
     created_posts: list[str] = []
     deleted_posts: list[str] = []
+    batch_updates: list[dict[str, Any]] = []
 
     for row_index, raw_row in enumerate(records, start=2):
         row = clean_row(raw_row)
@@ -348,24 +284,61 @@ def process_posts(
         try:
             match status:
                 case "approved":
-                    result = handle_approved_row(
-                        row, row_index, worksheet, headers, hugo_content_dir, dry_run
-                    )
-                    created_posts.append(result)
+                    result = handle_approved_row(row, row_index, hugo_content_dir, dry_run)
+                    if result:
+                        created_posts.append(result)
+                    if published_col:
+                        batch_updates.append(
+                            {
+                                "range": gspread.utils.rowcol_to_a1(row_index, published_col),
+                                "values": [[True]],
+                            }
+                        )
+                    if rerender_col:
+                        batch_updates.append(
+                            {
+                                "range": gspread.utils.rowcol_to_a1(row_index, rerender_col),
+                                "values": [[False]],
+                            }
+                        )
 
                 case "rejected":
-                    result = handle_rejected_row(
-                        row, row_index, worksheet, headers, hugo_content_dir, dry_run
-                    )
+                    result = handle_rejected_row(row, row_index, hugo_content_dir, dry_run)
                     if result:
                         deleted_posts.append(result)
+                    if published_col:
+                        batch_updates.append(
+                            {
+                                "range": gspread.utils.rowcol_to_a1(row_index, published_col),
+                                "values": [[False]],
+                            }
+                        )
+                    if rerender_col:
+                        batch_updates.append(
+                            {
+                                "range": gspread.utils.rowcol_to_a1(row_index, rerender_col),
+                                "values": [[False]],
+                            }
+                        )
 
-                case "pending":
-                    result = handle_pending_row(
-                        row, row_index, worksheet, headers, hugo_content_dir, dry_run
-                    )
+                case "pending" | "":
+                    result = handle_pending_row(row, row_index, hugo_content_dir, dry_run)
                     if result:
                         deleted_posts.append(result)
+                    if published_col:
+                        batch_updates.append(
+                            {
+                                "range": gspread.utils.rowcol_to_a1(row_index, published_col),
+                                "values": [[False]],
+                            }
+                        )
+                    if rerender_col:
+                        batch_updates.append(
+                            {
+                                "range": gspread.utils.rowcol_to_a1(row_index, rerender_col),
+                                "values": [[False]],
+                            }
+                        )
 
                 case _:
                     print(f"Warning: moderation_status '{status}' for row {row_index} is invalid.")
@@ -373,6 +346,14 @@ def process_posts(
         except Exception as e:
             timestamp = row.get("Timestamp") or "unknown"
             print(f"Error processing row {timestamp}: {e}")
+
+    # Batch write all sheet updates in one API call
+    if batch_updates and not dry_run:
+        try:
+            worksheet.batch_update(batch_updates, value_input_option="RAW")
+            print(f"\nBatch updated {len(batch_updates)} cells in sheet")
+        except Exception as e:
+            print(f"Warning: Batch sheet update failed: {e}")
 
     # Build set of filenames that should exist (approved rows)
     expected_filenames: set[str] = set()
