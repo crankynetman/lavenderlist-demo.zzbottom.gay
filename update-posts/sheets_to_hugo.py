@@ -46,7 +46,6 @@ def row_to_string(row: dict, key: str, default: str = "") -> str:
 def authenticate_sheets() -> gspread.Client:
     if not settings.google_credentials_json:
         raise ValueError("GOOGLE_CREDENTIALS_JSON env var not set")
-
     credentials_dict = json.loads(settings.google_credentials_json)
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
     creds = Credentials.from_service_account_info(credentials_dict, scopes=scopes)
@@ -73,8 +72,17 @@ def parse_submission_timestamp(raw: str) -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def get_filename_for_row(row: dict) -> str:
+    """Derive the deterministic filename for a row without generating full content."""
+    title = row_to_string(row, "Listing Title", "Untitled Post")
+    timestamp = row_to_string(row, "Timestamp")
+    post_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{timestamp}:{title}"))
+    title_slug = sanitize_text(title)
+    return f"{post_uuid}-{title_slug}" if title_slug else post_uuid
+
+
 def generate_hugo_post(row: dict) -> tuple[str, str]:
-    """Generate Hugo post from a sheet row. Returns (filename, content)."""
+    """Generate a Hugo post from a sheet row. Returns (filename, content)."""
     title = row_to_string(row, "Listing Title", "Untitled Post")
     description = row_to_string(row, "Listing Description")
     category = row_to_string(row, "Category:", "for-sale").lower().replace(" ", "-")
@@ -113,18 +121,15 @@ submitter_email = "{email}"
 +++"""
 
     content_sections = [f"## {title}"]
-
     if price:
         content_sections.append(f"**Price:** {price}")
     if location:
         content_sections.append(f"**Location:** {location}")
     if condition and condition.lower() != "n/a":
         content_sections.append(f"**Condition:** {condition}")
-
     content_sections.append("")
     if description:
         content_sections.extend(("### Description", description, ""))
-
     content_sections.append("### Contact")
     if contact_method:
         content_sections.append(f"**Preferred Contact:** {contact_method.title()}")
@@ -147,6 +152,17 @@ def save_hugo_post(filename: str, content: str, hugo_content_dir: str) -> str:
     return str(filepath)
 
 
+def delete_hugo_post(filename: str, hugo_content_dir: str) -> bool:
+    """Delete a Hugo post file if it exists. Returns True if a file was removed."""
+    if not filename.endswith(".md"):
+        filename += ".md"
+    filepath = Path(hugo_content_dir) / filename
+    if filepath.exists():
+        filepath.unlink()
+        return True
+    return False
+
+
 def mark_published_in_sheet(
     worksheet: gspread.Worksheet, row_index: int, headers: list[str]
 ) -> bool:
@@ -161,6 +177,7 @@ def mark_published_in_sheet(
         print(f"Warning: Could not mark row {row_index} as published: {e}")
         return False
 
+
 def clear_rerender_flag(worksheet: gspread.Worksheet, row_index: int, headers: list[str]) -> bool:
     """Reset re_render_post to FALSE after processing."""
     if "re_render_post" not in headers:
@@ -173,11 +190,12 @@ def clear_rerender_flag(worksheet: gspread.Worksheet, row_index: int, headers: l
         print(f"Warning: Could not clear re_render_post for row {row_index}: {e}")
         return False
 
+
 def process_posts(
     sheet_id: str,
     hugo_content_dir: str = "content/post",
     dry_run: bool = False,
-) -> tuple[list[str], int]:
+) -> tuple[list[str], list[str]]:
     try:
         client = authenticate_sheets()
         worksheet = get_worksheet(client, sheet_id)
@@ -185,40 +203,53 @@ def process_posts(
         records = worksheet.get_all_records()
     except Exception as e:
         print(f"Error fetching from Google Sheet: {e}")
-        return [], 0
-
-    approved_rows = [
-        (idx, row)
-        for idx, row in enumerate(records, start=2)
-        if row_to_string(row, "moderation_status").lower() == "approved"
-    ]
+        return [], []
 
     created_posts = []
-    for row_index, row in approved_rows:
+    deleted_posts = []
+
+    for row_index, row in enumerate(records, start=2):
+        status = row_to_string(row, "moderation_status").lower()
+
         try:
-            filename, content = generate_hugo_post(row)
+            if status == "approved":
+                filename, content = generate_hugo_post(row)
 
-            if dry_run:
-                print(f"[DRY RUN] Would write: {filename}.md")
-                print(f"   Title: {row_to_string(row, 'Listing Title')}")
-                print()
-                created_posts.append(filename)
-                continue
+                if dry_run:
+                    print(f"[DRY RUN] Would write: {filename}.md")
+                    print(f"   Title: {row_to_string(row, 'Listing Title')}")
+                    print()
+                    created_posts.append(filename)
+                    continue
 
-            filepath = save_hugo_post(filename, content, hugo_content_dir)
-            created_posts.append(filepath)
-            print(f"Wrote post: {filepath}")
+                filepath = save_hugo_post(filename, content, hugo_content_dir)
+                created_posts.append(filepath)
+                print(f"Wrote post: {filepath}")
 
-            if mark_published_in_sheet(worksheet, row_index, headers):
-                print("   Marked as published in sheet")
-            if clear_rerender_flag(worksheet, row_index, headers):
-                print("   Cleared re_render_post flag")
+                if mark_published_in_sheet(worksheet, row_index, headers):
+                    print("   Marked as published in sheet")
+                if clear_rerender_flag(worksheet, row_index, headers):
+                    print("   Cleared re_render_post flag")
+
+            elif status == "rejected":
+                filename = get_filename_for_row(row)
+
+                if dry_run:
+                    print(f"[DRY RUN] Would delete: {filename}.md")
+                    deleted_posts.append(filename)
+                    continue
+
+                if delete_hugo_post(filename, hugo_content_dir):
+                    deleted_posts.append(filename)
+                    print(f"Deleted post: {filename}.md")
+
+            # status == "pending" or anything else: do nothing
 
         except Exception as e:
             timestamp = row_to_string(row, "Timestamp") or "unknown"
             print(f"Error processing row {timestamp}: {e}")
 
-    return created_posts, len(created_posts)
+    return created_posts, deleted_posts
 
 
 def main() -> int:
@@ -238,21 +269,28 @@ def main() -> int:
     print(f"Using Sheet: {settings.google_sheet_id}")
     print(f"Content Dir: {settings.content_dir}\n")
 
-    created_posts, count = process_posts(
+    created_posts, deleted_posts = process_posts(
         sheet_id=settings.google_sheet_id,
         hugo_content_dir=settings.content_dir,
         dry_run=args.dry_run,
     )
 
     if args.dry_run:
-        print(f"\n[DRY RUN] Would have written {count} posts")
+        print(
+            f"\n[DRY RUN] Would have written {len(created_posts)} posts, deleted {len(deleted_posts)} posts"
+        )
     else:
-        print(f"\nSuccessfully wrote {count} posts:")
-        for post in created_posts:
-            print(f"  - {post}")
+        if created_posts:
+            print(f"\nSuccessfully wrote {len(created_posts)} posts:")
+            for post in created_posts:
+                print(f"  - {post}")
+        if deleted_posts:
+            print(f"\nDeleted {len(deleted_posts)} posts:")
+            for post in deleted_posts:
+                print(f"  - {post}")
 
-    if count == 0:
-        print("\nNo approved posts to process")
+    if not created_posts and not deleted_posts:
+        print("\nNo changes to process")
     return 0
 
 
