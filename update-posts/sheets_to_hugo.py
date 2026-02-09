@@ -9,13 +9,12 @@ markdown rendered by Hugo into HTML Posts -> published w/ GH Actions.
 Workflow:
 1. Users submit via Google Form
 2. Moderators review/approve in Google Sheet
-3. This script generates Hugo posts for approved entries
+3. This script generates Hugo posts for ALL approved entries (idempotently)
 4. Hugo builds and deploys the site in CI.
 """
 
 import argparse
 import json
-import os
 import re
 import uuid
 from datetime import UTC, datetime
@@ -53,21 +52,14 @@ def authenticate_sheets() -> gspread.Client:
 
 
 def fetch_approved_posts_from_sheet(sheet_id: str) -> list[dict]:
+    """Fetch all approved rows. No published/re-render flags — every approved row is rendered."""
     client = authenticate_sheets()
     try:
         sheet = client.open_by_key(sheet_id)
         worksheet = sheet.get_worksheet(0)
         records = worksheet.get_all_records()
 
-        return [
-            row
-            for row in records
-            if (
-                row.get("moderation_status", "").lower() == "approved"
-                and row.get("published", "").strip().upper() != "TRUE"
-            )
-            or row.get("re_render_post", "").strip().upper() == "TRUE"
-        ]
+        return [row for row in records if row.get("moderation_status", "").lower() == "approved"]
     except Exception as e:
         print(f"Error fetching from Google Sheet: {e}")
         return []
@@ -75,8 +67,24 @@ def fetch_approved_posts_from_sheet(sheet_id: str) -> list[dict]:
 
 def sanitize_text(text: str) -> str:
     """Convert text to valid filename-safe string."""
-    # Remove special characters, convert to lowercase, replace spaces with hyphens
     return re.sub(r"[-\s]+", "-", re.sub(r"[^\w\s-]", "", text.lower())).strip("-")
+
+
+def parse_submission_timestamp(raw: str) -> str:
+    """Try to parse the Google Forms timestamp into ISO 8601. Fall back to now()."""
+    formats = [
+        "%m/%d/%Y %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m/%d %H:%M:%S",
+        "%d/%m/%Y %H:%M:%S",
+    ]
+    for fmt in formats:
+        try:
+            dt = datetime.strptime(raw.strip(), fmt).replace(tzinfo=UTC)
+            return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            continue
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def generate_hugo_post_from_sheet_row(row_data: dict) -> tuple[str, str, str]:
@@ -91,26 +99,23 @@ def generate_hugo_post_from_sheet_row(row_data: dict) -> tuple[str, str, str]:
     contact_method = row_data.get("Contact Method", "email").strip()
     contact_info = row_data.get("Contact Info", "").strip()
     email = row_data.get("Email Address", "").strip()
+    timestamp = row_data.get("Timestamp", "").strip()
 
     post_uuid = row_data.get("uuid", "").strip()
     if not post_uuid:
-        timestamp = row_data.get("Timestamp", "").strip()
         post_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{timestamp}:{title}"))
 
     tags = [tag.strip().lower() for tag in tags_str.split(",") if tag.strip()]
     title_slug = sanitize_text(title)
-    if title_slug:
-        filename = f"{post_uuid}-{title_slug}"
-    else:
-        filename = post_uuid
+    filename = f"{post_uuid}-{title_slug}" if title_slug else post_uuid
 
     categories = [category]
-    current_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    post_date = parse_submission_timestamp(timestamp)
     categories_toml = "[" + ", ".join(f'"{cat}"' for cat in categories) + "]"
     tags_toml = "[" + ", ".join(f'"{tag}"' for tag in tags) + "]"
 
     front_matter = f"""+++
-date = "{current_time}"
+date = "{post_date}"
 draft = false
 title = "{title}"
 categories = {categories_toml}
@@ -159,17 +164,6 @@ def save_hugo_post(filename: str, content: str, hugo_content_dir: str = "content
     return str(filepath)
 
 
-def handle_filename_conflict(filename: str, hugo_content_dir: str) -> str:
-    base_path = Path(hugo_content_dir) / filename
-    if not (base_path.with_suffix(".md")).exists():
-        return filename
-
-    counter = 2
-    while (Path(hugo_content_dir) / f"{filename}-{counter}.md").exists():
-        counter += 1
-    return f"{filename}-{counter}"
-
-
 def update_uuid_in_sheet(
     sheet_id: str, row_data: dict, post_uuid: str, worksheet_index: int = 0
 ) -> bool:
@@ -193,53 +187,10 @@ def update_uuid_in_sheet(
         return False
 
 
-def clear_rerender_flag(sheet_id: str, row_data: dict, worksheet_index: int = 0) -> bool:
-    try:
-        client = authenticate_sheets()
-        sheet = client.open_by_key(sheet_id)
-        worksheet = sheet.get_worksheet(worksheet_index)
-        timestamp = row_data.get("Timestamp", "")
-        records = worksheet.get_all_records()
-
-        for idx, record in enumerate(records, start=2):
-            if record.get("Timestamp", "") == timestamp:
-                headers = worksheet.row_values(1)
-                if "re_render_post" in headers:
-                    col_idx = headers.index("re_render_post") + 1
-                    worksheet.update_cell(idx, col_idx, "FALSE")
-                    return True
-        return False
-    except Exception as e:
-        print(f"Warning: Could not clear re-render flag in sheet: {e}")
-        return False
-
-
-def mark_published_in_sheet(sheet_id: str, row_data: dict, worksheet_index: int = 0) -> bool:
-    try:
-        client = authenticate_sheets()
-        sheet = client.open_by_key(sheet_id)
-        worksheet = sheet.get_worksheet(worksheet_index)
-        timestamp = row_data.get("Timestamp", "")
-        records = worksheet.get_all_records()
-
-        for idx, record in enumerate(records, start=2):
-            if record.get("Timestamp", "") == timestamp:
-                headers = worksheet.row_values(1)
-                col_idx = headers.index("published") + 1 if "published" in headers else None
-                if col_idx:
-                    worksheet.update_cell(idx, col_idx, "TRUE")
-                    return True
-        return False
-    except Exception as e:
-        print(f"Warning: Could not mark as published in sheet: {e}")
-        return False
-
-
 def process_approved_posts_from_sheet(
     sheet_id: str,
     hugo_content_dir: str = "content/post",
     dry_run: bool = False,
-    mark_published: bool = True,
 ) -> tuple[list[str], int]:
     posts = fetch_approved_posts_from_sheet(sheet_id)
     created_posts = []
@@ -247,16 +198,10 @@ def process_approved_posts_from_sheet(
     for row in posts:
         try:
             filename, content, post_uuid = generate_hugo_post_from_sheet_row(row)
-
-            is_rerender = row.get("re_render_post", "").strip().upper() == "TRUE"
-            if not is_rerender:
-                filename = handle_filename_conflict(filename, hugo_content_dir)
-
-            filepath = os.path.join(hugo_content_dir, f"{filename}.md")
+            filepath = f"{hugo_content_dir}/{filename}.md"
 
             if dry_run:
-                action = "update" if is_rerender else "create"
-                print(f"[DRY RUN] Would {action}: {filename}.md")
+                print(f"[DRY RUN] Would write: {filename}.md")
                 print(f"   Title: {row.get('Listing Title')}")
                 print(f"   UUID: {post_uuid}")
                 print()
@@ -264,23 +209,10 @@ def process_approved_posts_from_sheet(
             else:
                 filepath = save_hugo_post(filename, content, hugo_content_dir)
                 created_posts.append(filepath)
-                action = "Updated" if is_rerender else "Created"
-                print(f"{action} post: {filepath}")
+                print(f"Wrote post: {filepath}")
 
                 if update_uuid_in_sheet(sheet_id, row, post_uuid):
                     print(f"   UUID saved: {post_uuid}")
-
-                if row.get("published", "").strip().upper() != "TRUE" and mark_published:
-                    if mark_published_in_sheet(sheet_id, row):
-                        print("   Marked as published in sheet")
-                    else:
-                        print("   Could not mark as published in sheet")
-
-                if row.get("re_render_post", "").strip().upper() == "TRUE":
-                    if clear_rerender_flag(sheet_id, row):
-                        print("   Cleared re-render flag")
-                    else:
-                        print("   Could not clear re-render flag")
 
         except Exception as e:
             timestamp = row.get("Timestamp", "unknown")
@@ -298,11 +230,6 @@ def main() -> int:
         action="store_true",
         help="Show what would be created without writing files",
     )
-    parser.add_argument(
-        "--no-publish",
-        action="store_true",
-        help="Don't mark rows as published in sheet",
-    )
     args = parser.parse_args()
 
     if not settings.google_sheet_id:
@@ -317,20 +244,17 @@ def main() -> int:
         sheet_id=settings.google_sheet_id,
         hugo_content_dir=settings.content_dir,
         dry_run=args.dry_run,
-        mark_published=(not args.no_publish),
     )
 
     if args.dry_run:
-        print(f"\n[DRY RUN] Would have created {count} posts")
+        print(f"\n[DRY RUN] Would have written {count} posts")
     else:
-        print(f"\nSuccessfully created {count} posts:")
+        print(f"\nSuccessfully wrote {count} posts:")
         for post in created_posts:
             print(f"  - {post}")
 
-    if count > 0:
-        print(f"\n{count} new posts ready for GitHub PR")
-    else:
-        print("\nNo new posts to process")
+    if count == 0:
+        print("\nNo approved posts to process")
     return 0
 
 
