@@ -4,6 +4,10 @@ on:
   schedule:
     - cron: '*/5 * * * *'
   workflow_dispatch:
+  
+concurrency:
+  group: update-posts
+  cancel-in-progress: true
 
 jobs:
   update-posts:
