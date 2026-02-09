@@ -10,7 +10,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
 
     steps:
       - uses: actions/checkout@v6
@@ -27,37 +26,15 @@ jobs:
         env:
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-          CONTENT_DIR: ../content/post # Hugo content directory relative to the script
+          CONTENT_DIR: ../content/post
         working-directory: ./update-posts
         run: uv run python sheets_to_hugo.py
 
-      - name: Check for changes
-        id: git-check
-        run: |
-          git add content/post/
-          if git diff --cached --quiet; then
-            echo "has-changes=false" >> $GITHUB_OUTPUT
-          else
-            echo "has-changes=true" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Create PR with new posts
-        if: steps.git-check.outputs.has-changes == 'true'
+      - name: Commit and push to main
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
-          BRANCH="posts/update-$TIMESTAMP"
-
-          git checkout -b $BRANCH
-          git commit -m "Add new posts from Google Sheet ($TIMESTAMP)"
-          git push origin $BRANCH
-
-          gh pr create \
-            --title "New listings: $TIMESTAMP" \
-            --body "Check new listings from the form moderation queue" \
-            --head $BRANCH \
-            --base main
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          git add content/post/
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "chore: update posts from Google Sheet"
+          git push
