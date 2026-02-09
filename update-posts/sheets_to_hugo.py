@@ -13,6 +13,7 @@ Workflow:
 import argparse
 import json
 import re
+import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,12 +21,16 @@ from typing import Any
 
 import gspread
 from google.oauth2.service_account import Credentials
+from gspread.utils import ValueInputOption
 from pydantic import ConfigDict, Field
 from pydantic_settings import BaseSettings
 
 AUTO_GENERATED_FILE_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-"
 )
+
+MAX_RETRIES = 3
+BACKOFF_BASE_SECONDS = 30
 
 
 class Settings(BaseSettings):
@@ -261,14 +266,10 @@ def process_posts(
     hugo_content_dir: str = "content/post",
     dry_run: bool = False,
 ) -> tuple[list[str], list[str]]:
-    try:
-        client = authenticate_sheets()
-        worksheet = get_worksheet(client, sheet_id)
-        headers = worksheet.row_values(1)
-        records = worksheet.get_all_records()
-    except Exception as e:
-        print(f"Error fetching from Google Sheet: {e}")
-        return [], []
+    client = authenticate_sheets()
+    worksheet = get_worksheet(client, sheet_id)
+    headers = worksheet.row_values(1)
+    records = worksheet.get_all_records()
 
     published_col = headers.index("published") + 1 if "published" in headers else None
     rerender_col = headers.index("re_render_post") + 1 if "re_render_post" in headers else None
@@ -276,6 +277,7 @@ def process_posts(
     created_posts: list[str] = []
     deleted_posts: list[str] = []
     batch_updates: list[dict[str, Any]] = []
+    row_errors: list[str] = []
 
     for row_index, raw_row in enumerate(records, start=2):
         row = clean_row(raw_row)
@@ -321,7 +323,7 @@ def process_posts(
                             }
                         )
 
-                case "pending" | "":
+                case "pending":
                     result = handle_pending_row(row, row_index, hugo_content_dir, dry_run)
                     if result:
                         deleted_posts.append(result)
@@ -345,15 +347,14 @@ def process_posts(
 
         except Exception as e:
             timestamp = row.get("Timestamp") or "unknown"
-            print(f"Error processing row {timestamp}: {e}")
+            error_msg = f"Row {row_index} ({timestamp}): {e}"
+            print(f"Error processing {error_msg}")
+            row_errors.append(error_msg)
 
     # Batch write all sheet updates in one API call
     if batch_updates and not dry_run:
-        try:
-            worksheet.batch_update(batch_updates, value_input_option="RAW")
-            print(f"\nBatch updated {len(batch_updates)} cells in sheet")
-        except Exception as e:
-            print(f"Warning: Batch sheet update failed: {e}")
+        worksheet.batch_update(batch_updates, value_input_option=ValueInputOption.raw)
+        print(f"\nBatch updated {len(batch_updates)} cells in sheet")
 
     # Build set of filenames that should exist (approved rows)
     expected_filenames: set[str] = set()
@@ -364,6 +365,13 @@ def process_posts(
 
     orphaned_posts = cleanup_orphaned_posts(expected_filenames, hugo_content_dir, dry_run)
     deleted_posts.extend(orphaned_posts)
+
+    # Fail only after all work that can be done, is done.
+    if row_errors:
+        raise RuntimeError(
+            f"{len(row_errors)} row(s) failed to process:\n"
+            + "\n".join(f"  - {e}" for e in row_errors)
+        )
 
     return created_posts, deleted_posts
 
@@ -385,11 +393,28 @@ def main() -> int:
     print(f"Using Sheet: {settings.google_sheet_id}")
     print(f"Content Dir: {settings.content_dir}\n")
 
-    created_posts, deleted_posts = process_posts(
-        sheet_id=settings.google_sheet_id,
-        hugo_content_dir=settings.content_dir,
-        dry_run=args.dry_run,
-    )
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            created_posts, deleted_posts = process_posts(
+                sheet_id=settings.google_sheet_id,
+                hugo_content_dir=settings.content_dir,
+                dry_run=args.dry_run,
+            )
+            break
+        except RuntimeError:
+            # Row processing errors won't fix themselves on retry
+            raise
+        except Exception as e:
+            if attempt < MAX_RETRIES:
+                wait = BACKOFF_BASE_SECONDS * attempt
+                print(f"\nAttempt {attempt}/{MAX_RETRIES} failed: {e}")
+                print(f"Retrying in {wait}s...\n")
+                time.sleep(wait)
+            else:
+                print(f"\nAll {MAX_RETRIES} attempts failed.")
+                raise
+    else:
+        return 1
 
     if args.dry_run:
         print(f"\n[DRY RUN] Wrote {len(created_posts)} posts, deleted {len(deleted_posts)} posts")
