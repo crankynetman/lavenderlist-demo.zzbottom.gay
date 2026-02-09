@@ -238,6 +238,33 @@ def handle_approved_row(
     return filepath
 
 
+def handle_pending_row(
+    row: dict[str, str],
+    row_index: int,
+    worksheet: gspread.Worksheet,
+    headers: list[str],
+    hugo_content_dir: str,
+    dry_run: bool = False,
+) -> str | None:
+    """Process a pending row. Deletes any existing post. Returns filename if deleted."""
+    filename = get_filename_for_row(row)
+
+    if dry_run:
+        print(f"[DRY RUN] Would delete (pending): {filename}.md")
+        return filename
+
+    deleted = delete_hugo_post(filename, hugo_content_dir)
+    if deleted:
+        print(f"Deleted post (pending): {filename}.md")
+
+    if mark_unpublished_in_sheet(worksheet, row_index, headers):
+        print("   Marked as unpublished in sheet")
+    if clear_rerender_flag(worksheet, row_index, headers):
+        print("   Cleared re_render_post flag")
+
+    return filename if deleted else None
+
+
 def handle_rejected_row(
     row: dict[str, str],
     row_index: int,
@@ -333,8 +360,12 @@ def process_posts(
                     if result:
                         deleted_posts.append(result)
 
-                case "pending" | "":
-                    pass
+                case "pending":
+                    result = handle_pending_row(
+                        row, row_index, worksheet, headers, hugo_content_dir, dry_run
+                    )
+                    if result:
+                        deleted_posts.append(result)
 
                 case _:
                     print(f"Warning: moderation_status '{status}' for row {row_index} is invalid.")
