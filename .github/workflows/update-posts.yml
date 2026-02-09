@@ -1,0 +1,64 @@
+name: Update Posts from Google Sheets
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  update-posts:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install UV
+        uses: astral-sh/setup-uv@v2
+
+      - name: Run sheets_to_hugo
+        env:
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        working-directory: ./update-posts
+        run: uv run python sheets_to_hugo.py
+
+      - name: Check for changes
+        id: git-check
+        run: |
+          if git diff --quiet; then
+            echo "has-changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "has-changes=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create PR with new posts
+        if: steps.git-check.outputs.has-changes == 'true'
+        run: |
+          git config --global credential.helper store
+          echo "https://oauth2:${{ secrets.GITHUB_TOKEN }}@github.com" > ~/.git-credentials
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+          BRANCH="posts/update-$TIMESTAMP"
+
+          git checkout -b $BRANCH
+          git add content/post/
+          git commit -m "Add new posts from Google Sheet ($TIMESTAMP)"
+          git push origin $BRANCH
+
+          gh pr create \
+            --title "New listings: $TIMESTAMP" \
+            --body "Check new listings from the form moderation queue" \
+            --head $BRANCH \
+            --base main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

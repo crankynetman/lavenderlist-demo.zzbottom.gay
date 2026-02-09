@@ -1,0 +1,31 @@
+name: PR Preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Hugo
+        uses: peaceiris/actions-hugo@v2
+        with:
+          hugo-version: '0.131.0'
+          extended: true
+
+      - name: Build Hugo
+        run: hugo --minify -b "https://${{ github.repository_owner }}.github.io/snapshots/pr-${{ github.event.number }}/"
+
+      - name: Deploy preview
+        uses: rossjrw/pr-preview-action@v1
+        with:
+          source-dir: ./public
+          preview-branch: gh-pages
+          umbrella-dir: snapshots
