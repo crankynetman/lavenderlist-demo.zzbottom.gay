@@ -41,6 +41,12 @@ class Settings(BaseSettings):
 settings = Settings()
 
 
+def row_to_string(row_data: dict, key: str, default: str = "") -> str:
+    """Safely extract a sheet value as a stripped string."""
+    val = row_data.get(key, default)
+    return str(val).strip()
+
+
 def authenticate_sheets() -> gspread.Client:
     if not settings.google_credentials_json:
         raise ValueError("GOOGLE_CREDENTIALS_JSON env var not set")
@@ -59,7 +65,9 @@ def fetch_approved_posts_from_sheet(sheet_id: str) -> list[dict]:
         worksheet = sheet.get_worksheet(0)
         records = worksheet.get_all_records()
 
-        return [row for row in records if row.get("moderation_status", "").lower() == "approved"]
+        return [
+            row for row in records if row_to_string(row, "moderation_status").lower() == "approved"
+        ]
     except Exception as e:
         print(f"Error fetching from Google Sheet: {e}")
         return []
@@ -89,19 +97,20 @@ def parse_submission_timestamp(raw: str) -> str:
 
 def generate_hugo_post_from_sheet_row(row_data: dict) -> tuple[str, str, str]:
     """Returns (filename, content, post_uuid)."""
-    title = row_data.get("Listing Title", "Untitled Post").strip()
-    description = row_data.get("Listing Description", "").strip()
-    category = row_data.get("Category:", "for-sale").lower().replace(" ", "-")
-    tags_str = row_data.get("Tags (comma separated list)", "").strip()
-    price = row_data.get("Price:", "").strip()
-    location = row_data.get("Location", "").strip()
-    condition = row_data.get("Condition", "N/A").strip()
-    contact_method = row_data.get("Contact Method", "email").strip()
-    contact_info = row_data.get("Contact Info", "").strip()
-    email = row_data.get("Email Address", "").strip()
-    timestamp = row_data.get("Timestamp", "").strip()
+    title = row_to_string(row_data, "Listing Title", "Untitled Post")
+    description = row_to_string(row_data, "Listing Description")
+    category = row_to_string(row_data, "Category:", "for-sale").lower().replace(" ", "-")
+    tags_str = row_to_string(row_data, "Tags (comma separated list)")
+    price = row_to_string(row_data, "Price:")
+    location = row_to_string(row_data, "Location")
+    condition = row_to_string(row_data, "Condition", "N/A")
+    contact_method = row_to_string(row_data, "Contact Method", "email")
+    contact_info = row_to_string(row_data, "Contact Info")
+    email = row_to_string(row_data, "Email Address")
+    timestamp = row_to_string(row_data, "Timestamp")
 
-    post_uuid = row_data.get("uuid", "").strip()
+    post_uuid = row_to_string(row_data, "uuid")
+
     if not post_uuid:
         post_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{timestamp}:{title}"))
 
@@ -171,11 +180,11 @@ def update_uuid_in_sheet(
         client = authenticate_sheets()
         sheet = client.open_by_key(sheet_id)
         worksheet = sheet.get_worksheet(worksheet_index)
-        timestamp = row_data.get("Timestamp", "")
+        timestamp = row_to_string(row_data, "Timestamp")
         records = worksheet.get_all_records()
 
         for idx, record in enumerate(records, start=2):
-            if record.get("Timestamp", "") == timestamp:
+            if row_to_string(record, "Timestamp") == timestamp:
                 headers = worksheet.row_values(1)
                 if "uuid" in headers:
                     col_idx = headers.index("uuid") + 1
@@ -215,7 +224,7 @@ def process_approved_posts_from_sheet(
                     print(f"   UUID saved: {post_uuid}")
 
         except Exception as e:
-            timestamp = row.get("Timestamp", "unknown")
+            timestamp = row_to_string(row, "Timestamp") or "unknown"
             print(f"Error processing row {timestamp}: {e}")
 
     return created_posts, len(created_posts)
