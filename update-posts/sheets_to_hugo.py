@@ -178,6 +178,21 @@ def mark_published_in_sheet(
         return False
 
 
+def mark_unpublished_in_sheet(
+    worksheet: gspread.Worksheet, row_index: int, headers: list[str]
+) -> bool:
+    """Mark a single row as unpublished. Expects the 1-based row index."""
+    if "published" not in headers:
+        return False
+    try:
+        col_idx = headers.index("published") + 1
+        worksheet.update_cell(row_index, col_idx, "FALSE")
+        return True
+    except Exception as e:
+        print(f"Warning: Could not mark row {row_index} as unpublished: {e}")
+        return False
+
+
 def clear_rerender_flag(worksheet: gspread.Worksheet, row_index: int, headers: list[str]) -> bool:
     """Reset re_render_post to FALSE after processing."""
     if "re_render_post" not in headers:
@@ -242,6 +257,9 @@ def process_posts(
                 if delete_hugo_post(filename, hugo_content_dir):
                     deleted_posts.append(filename)
                     print(f"Deleted post: {filename}.md")
+
+                if mark_unpublished_in_sheet(worksheet, row_index, headers):
+                    print("   Marked as unpublished in sheet")
 
             # status == "pending" or anything else: do nothing
 
