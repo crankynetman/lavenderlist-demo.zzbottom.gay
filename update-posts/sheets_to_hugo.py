@@ -16,12 +16,16 @@ import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import gspread
 from google.oauth2.service_account import Credentials
 from pydantic import ConfigDict, Field
 from pydantic_settings import BaseSettings
 
+AUTO_GENERATED_FILE_PATTERN = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-"
+)
 
 class Settings(BaseSettings):
     google_credentials_json: str = Field(default="", alias="GOOGLE_CREDENTIALS_JSON")
@@ -32,13 +36,13 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
-    )
+    )  # type: ignore[call-arg]
 
 
 settings = Settings()
 
 
-def row_to_string(row: dict, key: str, default: str = "") -> str:
+def row_to_string(row: dict[Any, Any], key: str, default: str = "") -> str:
     """Safely extract a sheet value as a stripped string."""
     return str(row.get(key, default)).strip()
 
@@ -48,7 +52,7 @@ def authenticate_sheets() -> gspread.Client:
         raise ValueError("GOOGLE_CREDENTIALS_JSON env var not set")
     credentials_dict = json.loads(settings.google_credentials_json)
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-    creds = Credentials.from_service_account_info(credentials_dict, scopes=scopes)
+    creds: Credentials = Credentials.from_service_account_info(credentials_dict, scopes=scopes)  # type: ignore[no-untyped-call]
     return gspread.authorize(creds)
 
 
@@ -72,7 +76,7 @@ def parse_submission_timestamp(raw: str) -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def get_filename_for_row(row: dict) -> str:
+def get_filename_for_row(row: dict[Any, Any]) -> str:
     """Derive the deterministic filename for a row without generating full content."""
     title = row_to_string(row, "Listing Title", "Untitled Post")
     timestamp = row_to_string(row, "Timestamp")
@@ -81,7 +85,7 @@ def get_filename_for_row(row: dict) -> str:
     return f"{post_uuid}-{title_slug}" if title_slug else post_uuid
 
 
-def generate_hugo_post(row: dict) -> tuple[str, str]:
+def generate_hugo_post(row: dict[Any, Any]) -> tuple[str, str]:
     """Generate a Hugo post from a sheet row. Returns (filename, content)."""
     title = row_to_string(row, "Listing Title", "Untitled Post")
     description = row_to_string(row, "Listing Description")
@@ -97,7 +101,7 @@ def generate_hugo_post(row: dict) -> tuple[str, str]:
 
     post_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{timestamp}:{title}"))
 
-    tags = [tag.strip().lower() for tag in tags_str.split(",") if tag.strip()]
+    tags = sorted({tag.strip().lower() for tag in tags_str.split(",") if tag.strip()})
     title_slug = sanitize_text(title)
     filename = f"{post_uuid}-{title_slug}" if title_slug else post_uuid
 
@@ -206,6 +210,92 @@ def clear_rerender_flag(worksheet: gspread.Worksheet, row_index: int, headers: l
         return False
 
 
+def handle_approved_row(
+    row: dict[Any, Any],
+    row_index: int,
+    worksheet: gspread.Worksheet,
+    headers: list[str],
+    hugo_content_dir: str,
+    dry_run: bool = False,
+) -> str:
+    """Process an approved row. Returns the filepath/filename."""
+    filename, content = generate_hugo_post(row)
+
+    if dry_run:
+        print(f"[DRY RUN] Would write: {filename}.md")
+        print(f"   Title: {row_to_string(row, 'Listing Title')}\n")
+        return filename
+
+    filepath = save_hugo_post(filename, content, hugo_content_dir)
+    print(f"Wrote post: {filepath}")
+
+    if mark_published_in_sheet(worksheet, row_index, headers):
+        print("   Marked as published in sheet")
+    if clear_rerender_flag(worksheet, row_index, headers):
+        print("   Cleared re_render_post flag")
+
+    return filepath
+
+
+def handle_rejected_row(
+    row: dict[Any, Any],
+    row_index: int,
+    worksheet: gspread.Worksheet,
+    headers: list[str],
+    hugo_content_dir: str,
+    dry_run: bool = False,
+) -> str | None:
+    """Process a rejected row. Returns the filename if a post was deleted."""
+    filename = get_filename_for_row(row)
+
+    if dry_run:
+        print(f"[DRY RUN] Would delete: {filename}.md")
+        return filename
+
+    deleted = delete_hugo_post(filename, hugo_content_dir)
+    if deleted:
+        print(f"Deleted post: {filename}.md")
+
+    if mark_unpublished_in_sheet(worksheet, row_index, headers):
+        print("   Marked as unpublished in sheet")
+    if clear_rerender_flag(worksheet, row_index, headers):
+        print("   Cleared re_render_post flag")
+
+    return filename if deleted else None
+
+
+def cleanup_orphaned_posts(
+    expected_filenames: set[str],
+    hugo_content_dir: str,
+    dry_run: bool = False,
+) -> list[str]:
+    """Delete auto-generated posts that no longer correspond to a sheet row.
+    Static posts (filenames without a UUID prefix) are never touched."""
+    content_dir = Path(hugo_content_dir)
+    if not content_dir.exists():
+        return []
+
+    orphaned: list[str] = []
+    for filepath in content_dir.glob("*.md"):
+        filename = filepath.stem  # without .md
+
+        # Skip posts we made by hand (i.e. no UUID-title file name)
+        if not AUTO_GENERATED_FILE_PATTERN.match(filename):
+            continue
+
+        if filename in expected_filenames:
+            continue
+
+        if dry_run:
+            print(f"[DRY RUN] Would delete orphan: {filepath.name}")
+        else:
+            filepath.unlink()
+            print(f"Deleted orphaned post: {filepath.name}")
+        orphaned.append(str(filepath))
+
+    return orphaned
+
+
 def process_posts(
     sheet_id: str,
     hugo_content_dir: str = "content/post",
@@ -220,52 +310,47 @@ def process_posts(
         print(f"Error fetching from Google Sheet: {e}")
         return [], []
 
-    created_posts = []
-    deleted_posts = []
+    created_posts: list[str] = []
+    deleted_posts: list[str] = []
 
     for row_index, row in enumerate(records, start=2):
         status = row_to_string(row, "moderation_status").lower()
 
         try:
-            if status == "approved":
-                filename, content = generate_hugo_post(row)
+            match status:
+                case "approved":
+                    result = handle_approved_row(
+                        row, row_index, worksheet, headers, hugo_content_dir, dry_run
+                    )
+                    created_posts.append(result)
 
-                if dry_run:
-                    print(f"[DRY RUN] Would write: {filename}.md")
-                    print(f"   Title: {row_to_string(row, 'Listing Title')}")
-                    print()
-                    created_posts.append(filename)
-                    continue
+                case "rejected":
+                    result = handle_rejected_row(
+                        row, row_index, worksheet, headers, hugo_content_dir, dry_run
+                    )
+                    if result:
+                        deleted_posts.append(result)
 
-                filepath = save_hugo_post(filename, content, hugo_content_dir)
-                created_posts.append(filepath)
-                print(f"Wrote post: {filepath}")
+                case "pending":
+                    pass
 
-                if mark_published_in_sheet(worksheet, row_index, headers):
-                    print("   Marked as published in sheet")
-                if clear_rerender_flag(worksheet, row_index, headers):
-                    print("   Cleared re_render_post flag")
-
-            elif status == "rejected":
-                filename = get_filename_for_row(row)
-
-                if dry_run:
-                    print(f"[DRY RUN] Would delete: {filename}.md")
-                    deleted_posts.append(filename)
-                    continue
-
-                if delete_hugo_post(filename, hugo_content_dir):
-                    deleted_posts.append(filename)
-                    print(f"Deleted post: {filename}.md")
-
-                if mark_unpublished_in_sheet(worksheet, row_index, headers):
-                    print("   Marked as unpublished in sheet")
-
-            # status == "pending" or anything else: do nothing
+                case _:
+                    print(
+                        f"Warning: Unknown moderation_status '{status}' for row {row_index}, skipping"
+                    )
 
         except Exception as e:
             timestamp = row_to_string(row, "Timestamp") or "unknown"
             print(f"Error processing row {timestamp}: {e}")
+
+    # Build set of filenames that should exist (approved rows)
+    expected_filenames: set[str] = set()
+    for _, row in enumerate(records, start=2):
+        if row_to_string(row, "moderation_status").lower() == "approved":
+            expected_filenames.add(get_filename_for_row(row))
+
+    orphaned_posts = cleanup_orphaned_posts(expected_filenames, hugo_content_dir, dry_run)
+    deleted_posts.extend(orphaned_posts)
 
     return created_posts, deleted_posts
 
