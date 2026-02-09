@@ -161,6 +161,17 @@ def mark_published_in_sheet(
         print(f"Warning: Could not mark row {row_index} as published: {e}")
         return False
 
+def clear_rerender_flag(worksheet: gspread.Worksheet, row_index: int, headers: list[str]) -> bool:
+    """Reset re_render_post to FALSE after processing."""
+    if "re_render_post" not in headers:
+        return False
+    try:
+        col_idx = headers.index("re_render_post") + 1
+        worksheet.update_cell(row_index, col_idx, "FALSE")
+        return True
+    except Exception as e:
+        print(f"Warning: Could not clear re_render_post for row {row_index}: {e}")
+        return False
 
 def process_posts(
     sheet_id: str,
@@ -200,6 +211,8 @@ def process_posts(
 
             if mark_published_in_sheet(worksheet, row_index, headers):
                 print("   Marked as published in sheet")
+            if clear_rerender_flag(worksheet, row_index, headers):
+                print("   Cleared re_render_post flag")
 
         except Exception as e:
             timestamp = row_to_string(row, "Timestamp") or "unknown"
