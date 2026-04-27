@@ -5,7 +5,7 @@ description = "Takes data from google sheets and process it into Hugo posts"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "ruff>=0.12.11",
+    "ruff>=0.15.12",
     "gspread>=6.0",
     "google-auth>=2.0",
     "python-dotenv>=1.0",
